@@ -1,41 +1,47 @@
-name: Build APK
+name: Build DukaBook Android APK
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.22.0'
-      - run: flutter create . --org com.eldoret.dukabook --project-name duka_app
-      - run: |
-          cat > lib/main.dart << 'EOF'
-          import 'package:flutter/material.dart';
-          import 'package:sqflite/sqflite.dart';
-          import 'package:path/path.dart';
-          void main() => runApp(DukaApp());
-          class DukaApp extends StatelessWidget {
-            @override
-            Widget build(BuildContext context) {
-              return MaterialApp(
-                debugShowCheckedModeBanner: false,
-                home: Scaffold(
-                  appBar: AppBar(title: Text('DukaBook - Eldoret'), backgroundColor: Colors.green[700]),
-                  body: Center(child: Text('DukaBook Ready!\nToday Sales: KES 0', textAlign: TextAlign.center, style: TextStyle(fontSize: 24))),
-                  floatingActionButton: FloatingActionButton(child: Icon(Icons.add), onPressed: (){}),
-                ),
-              );
-            }
-          }
-          EOF
-      - run: flutter pub add sqflite path path_provider
-      - run: flutter build apk --release
-      - uses: actions/upload-artifact@v4
+          channel: stable
+          cache: true
+
+      # The repository originally had no Android/gradle scaffold. Create one
+      # but restore the real app entry point afterwards, never a demo screen.
+      - name: Create missing Flutter Android project files
+        run: |
+          cp lib/main.dart /tmp/dukabook-main.dart
+          cp pubspec.yaml /tmp/dukabook-pubspec.yaml
+          flutter create . --org com.eldoret.dukabook --project-name duka_app --platforms android
+          cp /tmp/dukabook-main.dart lib/main.dart
+          cp /tmp/dukabook-pubspec.yaml pubspec.yaml
+
+      - name: Get packages
+        run: flutter pub get
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
         with:
-          name: duka-app-apk
+          name: DukaBook-v2-Android-APK
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
