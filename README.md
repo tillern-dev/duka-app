@@ -12,7 +12,7 @@ Built for Kenyan shops — works without internet, just like M-Pesa.
 - ✅ Daily sales: KES 4,300
 
 ## Tech
-Flutter + SQLite (offline first) + Supabase (optional backup)
+Acode + SQLite (offline first) + Supabase (optional backup)
 
 ## Build APK
 flutter pub get
