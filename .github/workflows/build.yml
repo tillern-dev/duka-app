@@ -1,0 +1,41 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+      - run: flutter create . --org com.eldoret.dukabook --project-name duka_app
+      - run: |
+          cat > lib/main.dart << 'EOF'
+          import 'package:flutter/material.dart';
+          import 'package:sqflite/sqflite.dart';
+          import 'package:path/path.dart';
+          void main() => runApp(DukaApp());
+          class DukaApp extends StatelessWidget {
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                debugShowCheckedModeBanner: false,
+                home: Scaffold(
+                  appBar: AppBar(title: Text('DukaBook - Eldoret'), backgroundColor: Colors.green[700]),
+                  body: Center(child: Text('DukaBook Ready!\nToday Sales: KES 0', textAlign: TextAlign.center, style: TextStyle(fontSize: 24))),
+                  floatingActionButton: FloatingActionButton(child: Icon(Icons.add), onPressed: (){}),
+                ),
+              );
+            }
+          }
+          EOF
+      - run: flutter pub add sqflite path path_provider
+      - run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: duka-app-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
