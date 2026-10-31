@@ -3,20 +3,25 @@
 No external Python packages. Runs on GitHub Actions only after flutter create.
 """
 from pathlib import Path
-import re, shutil
+import os, re, shutil
 root=Path(__file__).resolve().parent.parent
 android=root/'android'/'app'/'src'/'main'
 manifest=android/'AndroidManifest.xml'
 gradle=root/'android'/'app'/'build.gradle'
 assert manifest.is_file() and gradle.is_file(), 'Run flutter create before this script'
+signed_test = os.environ.get('DUKABOOK_SIGNED_TEST') == '1'
+launcher_label = 'DukaBook Signed Test' if signed_test else 'DukaBook Pilot'
+app_id = ('com.eldoret.dukabook.duka_app.signedtest' if signed_test
+          else 'com.eldoret.dukabook.duka_app.pilot')
 text=manifest.read_text(encoding='utf-8')
 # Change only the visible launcher name, not the package used by the activity.
-text,n=re.subn(r'android:label="[^"]+"','android:label="DukaBook Pilot"',text,count=1)
+text,n=re.subn(r'android:label="[^"]+"',f'android:label="{launcher_label}"',text,count=1)
 assert n==1, 'AndroidManifest.xml launcher label not found'
 manifest.write_text(text,encoding='utf-8')
-# Separate v2.2 Pilot from both the stable app and the v2.1 beta; keep namespace/MainActivity intact.
+# Keep the pilot and signed-test installs isolated from existing app data.
+# Do not modify namespace/MainActivity; the Android package name is only for installation.
 text=gradle.read_text(encoding='utf-8')
-text,n=re.subn(r'(\bapplicationId\s*(?:=\s*)?["\'])[^"\']+(["\'])',r'\g<1>com.eldoret.dukabook.duka_app.pilot\g<2>',text,count=1)
+text,n=re.subn(r'(\bapplicationId\s*(?:=\s*)?["\'])[^"\']+(["\'])',lambda m: m.group(1)+app_id+m.group(2),text,count=1)
 assert n==1, 'applicationId not found in android/app/build.gradle'
 gradle.write_text(text,encoding='utf-8')
 assets=root/'assets'/'android'
@@ -38,4 +43,4 @@ for folder in ('drawable','drawable-v21'):
     target=res/folder/'launch_background.xml'
     target.parent.mkdir(parents=True,exist_ok=True)
     target.write_text(xml,encoding='utf-8')
-print('Android launcher: DukaBook Pilot; isolated pilot application ID and approved storefront art applied')
+print(f'Android launcher: {launcher_label}; app ID {app_id}; approved storefront art applied')
