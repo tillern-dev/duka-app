@@ -1114,46 +1114,81 @@ class _DukaScreenState extends State<DukaScreen> {
       child: Scaffold(
         backgroundColor: splashBackground,
         body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 30),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Spacer(),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(27),
-                  child: Image.asset(
-                    'assets/branding/storefront_icon.png',
-                    width: 118,
-                    height: 118,
-                    fit: BoxFit.cover,
+          child: SizedBox(
+            // Fill the entire display. Centering Text alone does not center
+            // the whole splash when an ancestor gives the Column a narrow width.
+            width: MediaQuery.sizeOf(context).width,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 30),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(27),
+                            child: Image.asset(
+                              'assets/branding/storefront_icon.png',
+                              width: 118,
+                              height: 118,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                          const SizedBox(height: 22),
+                          const Text(
+                            'DukaBook',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 35,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: .2,
+                              color: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Run Your Duka Smarter.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 15, color: Color(0xFFD1E9DC)),
+                          ),
+                          const SizedBox(height: 18),
+                          const Text(
+                            'Welcome to smarter shop management!',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 13, color: Color(0xFFB3CFC1)),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 22),
-                const Text('DukaBook',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                        fontSize: 35, fontWeight: FontWeight.w900,
-                        letterSpacing: .2, color: Colors.white)),
-                const SizedBox(height: 8),
-                const Text('Run Your Duka Smarter.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 15, color: Color(0xFFD1E9DC))),
-                const SizedBox(height: 18),
-                const Text('Welcome to smarter shop management!',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 13, color: Color(0xFFB3CFC1))),
-                const Spacer(),
-                const Text('POWERED BY TILLERN LABS',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                        fontWeight: FontWeight.w800, letterSpacing: 1.8,
-                        color: Color(0xFFE7C77A), fontSize: 12)),
-                const SizedBox(height: 6),
-                const Text('Building Ideas Into Digital Reality',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Color(0xFFA5BDB0), fontSize: 11)),
-              ],
+                  const Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Text(
+                        'POWERED BY TILLERN LABS',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.8,
+                          color: Color(0xFFE7C77A),
+                          fontSize: 12,
+                        ),
+                      ),
+                      SizedBox(height: 6),
+                      Text(
+                        'Building Ideas Into Digital Reality',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Color(0xFFA5BDB0), fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
         ),
