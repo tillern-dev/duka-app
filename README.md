@@ -13,10 +13,10 @@ The v2.2 branch adds partial debt repayments, a stock-change audit trail, cash/M
 - **English-only** time-of-day dashboard greeting: Good morning / Good afternoon / Good evening, with optional saved owner name.
 - Branded welcome screen: shop icon, DukaBook, Run Your Duka Smarter, and Powered by TILLERN LABS.
 - Real app icon: generated at the five Android launcher densities, replacing the default Flutter mark.
-- Android launcher title **DukaBook β** to distinguish the beta from v2.0. The public retail release will use **DukaBook**.
+- Android launcher title **DukaBook Pilot** to distinguish it from the installed v2.1 beta. The public retail release will use **DukaBook**.
 - In-app logo and wordmark with Duka green, Book orange, plus TILLERN LABS attribution.
 - SafeArea status bar fix, existing offline sales/stock/debts features, manual JSON backup and restore.
-- Separate Android application ID `com.eldoret.dukabook.duka_app.beta` to avoid overwriting the working v2.0 app.
+- Separate Android application ID `com.eldoret.dukabook.duka_app.pilot` to allow safe side-by-side installation without overwriting v2.1 app data.
 
 ## Source tree
 
@@ -45,7 +45,7 @@ RELEASE_CHECKLIST.md
 
 ## Release safety
 
-- **Not built or installed in this environment**; GitHub Actions must confirm compile succeeds and the user should test installation.
+- GitHub Actions checks build status; Android device functional tests and signing verification must still be completed.
 - Backup exports are **unencrypted JSON** and may contain customer contact details. Keep them private and test restore before relying on it.
 - Beta APK uses a temporary signing setup. Before paid distribution, create a persistent release keystore and store it securely in GitHub Actions secrets, with an offline backup. **Don't publish a commercial APK with ephemeral signing.**
 - Don't uninstall v2.0 until beta is proven and an intentional data migration is available.
