@@ -12,7 +12,7 @@ DukaBook is a product by TILLERN LABS; business/trademark registration is not im
 - Existing DukaBook icon, English greeting, splash, and TILLERN LABS branding are retained.
 
 ## Mandatory checks before a live trial
-1. **Do not uninstall v2.1 or clear its data.** This branch uses the same beta Android application ID and GitHub's temporary signing. A newly built APK may not update the prior beta. Export an old beta backup securely and validate it on a disposable test installation.
+1. **Do not uninstall v2.1 or clear its data.** DukaBook Pilot uses a separate Android application ID and launcher label, so it can be installed alongside the v2.1 beta. Data does not transfer automatically. Use dummy records and keep unencrypted backups private.
 2. Run on a spare/test phone with dummy records. Create a 10-unit product selling at KES 100, then sell 2 for Cash. Expected stock 8, gross sales +KES 200 and cash received +KES 200.
 3. Credit sale: add a KES 500 credit sale. Gross sales increase by KES 500; cash received stays unchanged; debt to collect increases by KES 500.
 4. Receive KES 200 Cash on that debt. Remaining balance = KES 300; debt collection history adds KES 200; cash received rises by KES 200, **but gross sales do not rise again**.
