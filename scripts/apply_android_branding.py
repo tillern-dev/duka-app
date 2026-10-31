@@ -16,7 +16,7 @@ assert n==1, 'AndroidManifest.xml launcher label not found'
 manifest.write_text(text,encoding='utf-8')
 # Separate beta installs alongside stable v2.0. Keep Android namespace / MainActivity intact.
 text=gradle.read_text(encoding='utf-8')
-text,n=re.subn(r'(applicationId\s+["\'])[^"\']+(["\'])',r'\g<1>com.eldoret.dukabook.duka_app.beta\g<2>',text,count=1)
+text,n=re.subn(r'(\bapplicationId\s*(?:=\s*)?["\'])[^"\']+(["\'])',r'\g<1>com.eldoret.dukabook.duka_app.beta\g<2>',text,count=1)
 assert n==1, 'applicationId not found in android/app/build.gradle'
 gradle.write_text(text,encoding='utf-8')
 assets=root/'assets'/'android'
