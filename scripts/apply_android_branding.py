@@ -11,12 +11,12 @@ gradle=root/'android'/'app'/'build.gradle'
 assert manifest.is_file() and gradle.is_file(), 'Run flutter create before this script'
 text=manifest.read_text(encoding='utf-8')
 # Change only the visible launcher name, not the package used by the activity.
-text,n=re.subn(r'android:label="[^"]+"','android:label="DukaBook β"',text,count=1)
+text,n=re.subn(r'android:label="[^"]+"','android:label="DukaBook Pilot"',text,count=1)
 assert n==1, 'AndroidManifest.xml launcher label not found'
 manifest.write_text(text,encoding='utf-8')
-# Separate beta installs alongside stable v2.0. Keep Android namespace / MainActivity intact.
+# Separate v2.2 Pilot from both the stable app and the v2.1 beta; keep namespace/MainActivity intact.
 text=gradle.read_text(encoding='utf-8')
-text,n=re.subn(r'(\bapplicationId\s*(?:=\s*)?["\'])[^"\']+(["\'])',r'\g<1>com.eldoret.dukabook.duka_app.beta\g<2>',text,count=1)
+text,n=re.subn(r'(\bapplicationId\s*(?:=\s*)?["\'])[^"\']+(["\'])',r'\g<1>com.eldoret.dukabook.duka_app.pilot\g<2>',text,count=1)
 assert n==1, 'applicationId not found in android/app/build.gradle'
 gradle.write_text(text,encoding='utf-8')
 assets=root/'assets'/'android'
@@ -38,4 +38,4 @@ for folder in ('drawable','drawable-v21'):
     target=res/folder/'launch_background.xml'
     target.parent.mkdir(parents=True,exist_ok=True)
     target.write_text(xml,encoding='utf-8')
-print('Android launcher: DukaBook β; beta application ID and approved storefront art applied')
+print('Android launcher: DukaBook Pilot; isolated pilot application ID and approved storefront art applied')
