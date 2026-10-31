@@ -1,0 +1,83 @@
+name: Build Permanently Signed DukaBook Test APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      acknowledge:
+        description: 'I understand this creates a separate test app, not an update to the installed pilot'
+        required: true
+        type: choice
+        options:
+          - 'yes'
+
+permissions:
+  contents: read
+
+jobs:
+  signed-test:
+    if: github.ref == 'refs/heads/feature/v2-2-retail-pilot' && inputs.acknowledge == 'yes'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out requested branch
+        uses: actions/checkout@v4
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: stable
+          cache: true
+
+      - name: Create Android project without replacing DukaBook source
+        run: |
+          cp lib/main.dart /tmp/dukabook-signed-main.dart
+          cp pubspec.yaml /tmp/dukabook-signed-pubspec.yaml
+          flutter create . --org com.eldoret.dukabook --project-name duka_app --platforms android
+          cp /tmp/dukabook-signed-main.dart lib/main.dart
+          cp /tmp/dukabook-signed-pubspec.yaml pubspec.yaml
+
+      - name: Set separate app name, package ID, and branding
+        env:
+          DUKABOOK_SIGNED_TEST: '1'
+        run: python3 scripts/apply_android_branding.py
+
+      - name: Prepare private signing from GitHub Actions secrets
+        env:
+          DUKABOOK_KEYSTORE_B64: ${{ secrets.DUKABOOK_KEYSTORE_B64 }}
+          DUKABOOK_KEYSTORE_PASSWORD: ${{ secrets.DUKABOOK_KEYSTORE_PASSWORD }}
+          DUKABOOK_KEY_ALIAS: ${{ secrets.DUKABOOK_KEY_ALIAS }}
+          DUKABOOK_KEY_PASSWORD: ${{ secrets.DUKABOOK_KEY_PASSWORD }}
+        run: python3 scripts/configure_signed_android.py
+
+      - name: Fetch Flutter packages
+        run: flutter pub get
+
+      - name: Analyze Dart source
+        run: flutter analyze --no-fatal-infos lib/main.dart
+
+      - name: Build signed release APK
+        env:
+          DUKABOOK_KEYSTORE_PASSWORD: ${{ secrets.DUKABOOK_KEYSTORE_PASSWORD }}
+          DUKABOOK_KEY_ALIAS: ${{ secrets.DUKABOOK_KEY_ALIAS }}
+          DUKABOOK_KEY_PASSWORD: ${{ secrets.DUKABOOK_KEY_PASSWORD }}
+        run: flutter build apk --release
+
+      - name: Verify APK signature
+        run: |
+          set -euo pipefail
+          APK="build/app/outputs/flutter-apk/app-release.apk"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+
+      - name: Upload signed test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: DukaBook-v2.2-Permanently-Signed-Test-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Delete temporary key file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/dukabook-signed-test.jks"
