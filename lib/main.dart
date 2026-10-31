@@ -84,6 +84,9 @@ class _DukaScreenState extends State<DukaScreen> {
   List<Map<String, Object?>> _debts = [];
   List<Map<String, Object?>> _customers = [];
   List<Map<String, Object?>> _collections = [];
+  List<Map<String, Object?>> _stockMovements = [];
+  int _todayCashCollections = 0;
+  int _todayMpesaCollections = 0;
   int _todaySales = 0;
   int _todayCash = 0;
   int _todayMpesa = 0;
@@ -145,11 +148,11 @@ class _DukaScreenState extends State<DukaScreen> {
       final dbFile = path.join(await getDatabasesPath(), 'duka.db');
       _db = await openDatabase(
         dbFile,
-        version: 3,
+        version: 4,
         onCreate: (db, _) async {
           await db.execute('CREATE TABLE products(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, stock INTEGER NOT NULL, price INTEGER NOT NULL)');
           await db.execute('CREATE TABLE sales(id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL, amount INTEGER NOT NULL, date TEXT NOT NULL, product_id INTEGER, quantity INTEGER DEFAULT 1, payment_method TEXT DEFAULT \'Cash\', created_at TEXT, receipt_id TEXT)');
-          await db.execute('CREATE TABLE debts(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, amount INTEGER NOT NULL, date TEXT NOT NULL, status TEXT DEFAULT \'Unpaid\', notes TEXT, phone TEXT, due_date TEXT)');
+          await db.execute('CREATE TABLE debts(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, amount INTEGER NOT NULL, remaining_amount INTEGER NOT NULL, date TEXT NOT NULL, status TEXT DEFAULT \'Unpaid\', notes TEXT, phone TEXT, due_date TEXT)');
           await _createSupportingTables(db);
         },
         onUpgrade: (db, old, next) async {
@@ -167,6 +170,11 @@ class _DukaScreenState extends State<DukaScreen> {
             await db.execute('ALTER TABLE debts ADD COLUMN due_date TEXT');
             await _createSupportingTables(db);
           }
+          if (old < 4) {
+            await db.execute('ALTER TABLE debts ADD COLUMN remaining_amount INTEGER');
+            await db.execute("UPDATE debts SET remaining_amount = CASE WHEN status = 'Paid' THEN 0 ELSE amount END WHERE remaining_amount IS NULL");
+            await _createSupportingTables(db);
+          }
         },
       );
       await _refresh();
@@ -181,6 +189,7 @@ class _DukaScreenState extends State<DukaScreen> {
     await db.execute('CREATE TABLE IF NOT EXISTS customers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, phone TEXT)');
     await db.execute('CREATE TABLE IF NOT EXISTS collections(id INTEGER PRIMARY KEY AUTOINCREMENT, debt_id INTEGER NOT NULL, amount INTEGER NOT NULL, payment_method TEXT NOT NULL, date TEXT NOT NULL)');
     await db.execute('CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    await db.execute('CREATE TABLE IF NOT EXISTS stock_movements(id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, product_name TEXT NOT NULL, delta INTEGER NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL)');
   }
 
   Future<void> _refresh() async {
@@ -191,6 +200,8 @@ class _DukaScreenState extends State<DukaScreen> {
     final debts = await db.query('debts', orderBy: 'id DESC');
     final customers = await db.query('customers', orderBy: 'name COLLATE NOCASE');
     final collections = await db.query('collections', orderBy: 'id DESC', limit: 100);
+    final movements = await db.query('stock_movements', orderBy: 'id DESC', limit: 200);
+    final cashCollections = await db.rawQuery("SELECT COALESCE(SUM(CASE WHEN payment_method = 'Cash' THEN amount ELSE 0 END),0) AS cash, COALESCE(SUM(CASE WHEN payment_method = 'M-Pesa' THEN amount ELSE 0 END),0) AS mpesa FROM collections WHERE date = ?", [_today]);
     final settings = await db.query('settings');
     final totals = await db.rawQuery(
       "SELECT COALESCE(SUM(amount),0) AS total, "
@@ -207,6 +218,9 @@ class _DukaScreenState extends State<DukaScreen> {
       _debts = debts;
       _customers = customers;
       _collections = collections;
+      _stockMovements = movements;
+      _todayCashCollections = _number(cashCollections.first['cash']);
+      _todayMpesaCollections = _number(cashCollections.first['mpesa']);
       _owner = prefs['owner']?.trim().isNotEmpty == true ? prefs['owner']! : 'Owner';
       _shop = prefs['shop']?.trim().isNotEmpty == true ? prefs['shop']! : 'My Shop';
       _todaySales = _number(totals.first['total']);
@@ -294,17 +308,47 @@ class _DukaScreenState extends State<DukaScreen> {
     name.dispose(); price.dispose(); stock.dispose();
     if (ok != true) return;
     await _run(() async {
-      if (product == null) {
-        await _db!.insert('products', values);
-      } else {
-        await _db!.update('products', values, where: 'id = ?', whereArgs: [product['id']]);
-      }
+      await _db!.transaction((txn) async {
+        final stockNow = _number(values['stock']);
+        final productName = values['name'].toString();
+        int productId;
+        int delta;
+        if (product == null) {
+          productId = await txn.insert('products', values);
+          delta = stockNow;
+        } else {
+          productId = _number(product['id']);
+          final rows = await txn.query('products', where: 'id = ?', whereArgs: [productId], limit: 1);
+          if (rows.isEmpty) throw StateError('Product no longer exists');
+          delta = stockNow - _number(rows.first['stock']);
+          await txn.update('products', values, where: 'id = ?', whereArgs: [productId]);
+        }
+        if (delta != 0) {
+          await txn.insert('stock_movements', {
+            'product_id': productId, 'product_name': productName, 'delta': delta,
+            'reason': product == null ? 'Opening stock' : 'Manual stock adjustment',
+            'created_at': DateTime.now().toIso8601String(),
+          });
+        }
+      });
     }, success: 'Product saved');
   }
 
   Future<void> _deleteProduct(Map<String, Object?> item) async {
     if (!await _confirm('Remove product?', '${item['name']} will be removed from stock. Recorded sales will remain.', action: 'Remove')) return;
-    await _run(() async { await _db!.delete('products', where: 'id = ?', whereArgs: [item['id']]); }, success: 'Product removed');
+    await _run(() async {
+      await _db!.transaction((txn) async {
+        final rows = await txn.query('products', where: 'id = ?', whereArgs: [item['id']], limit: 1);
+        if (rows.isEmpty) return;
+        final current = rows.first;
+        await txn.insert('stock_movements', {
+          'product_id': current['id'], 'product_name': current['name'],
+          'delta': -_number(current['stock']), 'reason': 'Product removed',
+          'created_at': DateTime.now().toIso8601String(),
+        });
+        await txn.delete('products', where: 'id = ?', whereArgs: [item['id']]);
+      });
+    }, success: 'Product removed');
   }
 
   void _changeCart(Map<String, Object?> product, int delta) {
@@ -392,6 +436,10 @@ class _DukaScreenState extends State<DukaScreen> {
           if (changed != 1) throw StateError('Not enough stock for ${product['name']}');
           final amount = _number(product['price']) * entry.value;
           verifiedTotal += amount;
+          await txn.insert('stock_movements', {
+            'product_id': entry.key, 'product_name': product['name'],
+            'delta': -entry.value, 'reason': 'Sold', 'created_at': now,
+          });
           await txn.insert('sales', {
             'item': product['name'], 'amount': amount, 'date': _today,
             'product_id': entry.key, 'quantity': entry.value,
@@ -400,7 +448,7 @@ class _DukaScreenState extends State<DukaScreen> {
         }
         if (payment == 'Credit') {
           await txn.insert('debts', {
-            'name': name, 'amount': verifiedTotal, 'date': _today, 'status': 'Unpaid',
+            'name': name, 'amount': verifiedTotal, 'remaining_amount': verifiedTotal, 'date': _today, 'status': 'Unpaid',
             'notes': 'Sale receipt $receipt', 'phone': phone, 'due_date': due,
           });
           final found = await txn.query('customers', where: 'name = ? COLLATE NOCASE', whereArgs: [name], limit: 1);
@@ -446,37 +494,89 @@ class _DukaScreenState extends State<DukaScreen> {
     name.dispose(); amount.dispose(); phone.dispose();
     if (ok != true || a == null) return;
     await _run(() async => _db!.transaction((txn) async {
-      await txn.insert('debts', {'name': n, 'amount': a, 'date': _today, 'status': 'Unpaid', 'phone': p, 'due_date': dueString});
+      await txn.insert('debts', {'name': n, 'amount': a, 'remaining_amount': a, 'date': _today, 'status': 'Unpaid', 'phone': p, 'due_date': dueString});
       final old = await txn.query('customers', where: 'name = ? COLLATE NOCASE', whereArgs: [n], limit: 1);
       if (old.isEmpty) await txn.insert('customers', {'name': n, 'phone': p});
     }), success: 'Debt saved');
   }
 
-  Future<void> _markPaid(Map<String, Object?> debt) async {
+  // Accept instalments and full payments. A single SQLite transaction ensures
+  // the remaining balance, status and collection entry never disagree.
+  Future<void> _recordPayment(Map<String, Object?> debt) async {
+    final dueNow = _number(debt['remaining_amount']);
+    if (dueNow <= 0) { _alert('This debt has already been paid'); return; }
+    final amount = TextEditingController(text: dueNow.toString());
+    final form = GlobalKey<FormState>();
     String method = 'Cash';
-    final confirmed = await showDialog<bool>(context: context, builder: (c) => StatefulBuilder(builder: (c, update) => AlertDialog(
-      title: const Text('Record debt repayment'),
-      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('${debt['name']} owes ${_kes(_number(debt['amount']))}.'),
-        const SizedBox(height: 12),
-        DropdownButtonFormField<String>(value: method, decoration: const InputDecoration(labelText: 'Received via'), items: const [
-          DropdownMenuItem(value: 'Cash', child: Text('Cash')),
-          DropdownMenuItem(value: 'M-Pesa', child: Text('M-Pesa')),
-        ], onChanged: (v) => update(() => method = v ?? 'Cash')),
-        const SizedBox(height: 8),
-        const Text('This records a collection, not a second sale.', style: TextStyle(color: Colors.black54, fontSize: 12)),
-      ]),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')),
-        FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('Mark paid')),
-      ],
-    )));
-    if (confirmed != true) return;
-    await _run(() async => _db!.transaction((txn) async {
-      final updated = await txn.update('debts', {'status': 'Paid'}, where: "id = ? AND COALESCE(status, 'Unpaid') != 'Paid'", whereArgs: [debt['id']]);
-      if (updated != 1) throw StateError('Already paid or missing');
-      await txn.insert('collections', {'debt_id': debt['id'], 'amount': _number(debt['amount']), 'payment_method': method, 'date': _today});
-    }), success: 'Debt marked paid');
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => StatefulBuilder(
+        builder: (dialog, update) => AlertDialog(
+          title: const Text('Record repayment'),
+          content: Form(
+            key: form,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Text('Balance: ${_kes(dueNow)}'),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: amount,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Amount received (KES)'),
+                validator: (value) {
+                  final parsed = int.tryParse(value?.trim() ?? '');
+                  if (parsed == null || parsed <= 0) return 'Enter a positive amount';
+                  if (parsed > dueNow) return 'Cannot exceed outstanding balance';
+                  return null;
+                },
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                value: method,
+                decoration: const InputDecoration(labelText: 'Received via'),
+                items: const [
+                  DropdownMenuItem(value: 'Cash', child: Text('Cash')),
+                  DropdownMenuItem(value: 'M-Pesa', child: Text('M-Pesa')),
+                ],
+                onChanged: (value) => update(() => method = value ?? 'Cash'),
+              ),
+              const SizedBox(height: 8),
+              const Text('A repayment is not counted as a second sale.',
+                  style: TextStyle(color: Colors.black54, fontSize: 12)),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialog, false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () {
+                if (form.currentState!.validate()) Navigator.pop(dialog, true);
+              },
+              child: const Text('Record payment'),
+            ),
+          ],
+        ),
+      ),
+    );
+    final paid = int.tryParse(amount.text.trim()) ?? 0;
+    amount.dispose();
+    if (confirmed != true || paid <= 0) return;
+    await _run(() async {
+      await _db!.transaction((txn) async {
+        final rows = await txn.query('debts', where: 'id = ?', whereArgs: [debt['id']], limit: 1);
+        if (rows.isEmpty) throw StateError('Debt not found');
+        final current = _number(rows.first['remaining_amount']);
+        if (current <= 0 || paid > current) throw StateError('Balance changed; refresh and retry');
+        final remaining = current - paid;
+        final updated = await txn.update('debts', {
+          'remaining_amount': remaining,
+          'status': remaining == 0 ? 'Paid' : 'Unpaid',
+        }, where: 'id = ? AND remaining_amount = ?', whereArgs: [debt['id'], current]);
+        if (updated != 1) throw StateError('Balance changed; refresh and retry');
+        await txn.insert('collections', {
+          'debt_id': debt['id'], 'amount': paid,
+          'payment_method': method, 'date': _today,
+        });
+      });
+    }, success: 'Repayment recorded');
   }
 
   String? _kenyanPhone(String source) {
