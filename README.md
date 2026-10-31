@@ -1,6 +1,12 @@
-# DukaBook v2.1 Branded BETA — TILLERN LABS
+# DukaBook v2.2 Retail Pilot BETA — TILLERN LABS
 
 DukaBook is the product; **TILLERN LABS** is its developer brand. This source package integrates the two approved DukaBook images (storefront/shop + receipt) into the home header, Flutter welcome screen, About/More page, Android launcher icons, and Android native launch artwork.
+
+## v2.2 pilot scope
+
+The v2.2 branch adds partial debt repayments, a stock-change audit trail, cash/M-Pesa received totals that include debt collections without double-counting sales, schema-v4 local database migration, and backup schema v2 with compatibility for v2.1 backups.
+
+**This is not yet a release for paying shops.** Signing is not persistent, backups are unencrypted, there is no app lock, and automated migration/restore testing is incomplete. See [PILOT_TEST_PLAN.md](PILOT_TEST_PLAN.md) and [SIGNING_AND_RELEASE.md](SIGNING_AND_RELEASE.md). The existing v2.1 build on main is unaffected.
 
 ## What's included
 
