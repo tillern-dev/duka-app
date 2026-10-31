@@ -1,7 +1,7 @@
 name: duka_app
-description: DukaBook 2.1 offline-first beta, shop backup and restore.
+description: DukaBook 2.2 offline-first retail pilot beta, instalment debts and stock audit.
 publish_to: 'none'
-version: 2.1.0+3
+version: 2.2.0+4
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
