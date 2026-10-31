@@ -60,7 +60,19 @@ jobs:
           DUKABOOK_KEYSTORE_PASSWORD: ${{ secrets.DUKABOOK_KEYSTORE_PASSWORD }}
           DUKABOOK_KEY_ALIAS: ${{ secrets.DUKABOOK_KEY_ALIAS }}
           DUKABOOK_KEY_PASSWORD: ${{ secrets.DUKABOOK_KEY_PASSWORD }}
-        run: flutter build apk --release
+        run: flutter build apk --release --build-name=2.2.1 --build-number=5
+
+      - name: Verify update package identity and version
+        run: |
+          set -euo pipefail
+          APK="build/app/outputs/flutter-apk/app-release.apk"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          test -n "$AAPT"
+          PACKAGE_INFO="$("$AAPT" dump badging "$APK" | grep '^package:')"
+          printf '%s\\n' "$PACKAGE_INFO"
+          grep -Fq "name='com.eldoret.dukabook.duka_app.signedtest'" <<< "$PACKAGE_INFO"
+          grep -Fq "versionCode='5'" <<< "$PACKAGE_INFO"
+          grep -Fq "versionName='2.2.1'" <<< "$PACKAGE_INFO"
 
       - name: Verify APK signature
         run: |
@@ -73,7 +85,7 @@ jobs:
       - name: Upload signed test APK
         uses: actions/upload-artifact@v4
         with:
-          name: DukaBook-v2.2-Permanently-Signed-Test-APK
+          name: DukaBook-v2.2.1-Signed-Update-Test-APK
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14
