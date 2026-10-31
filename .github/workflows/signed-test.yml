@@ -69,7 +69,7 @@ jobs:
           AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
           test -n "$AAPT"
           PACKAGE_INFO="$("$AAPT" dump badging "$APK" | grep '^package:')"
-          printf '%s\\n' "$PACKAGE_INFO"
+          echo "$PACKAGE_INFO"
           grep -Fq "name='com.eldoret.dukabook.duka_app.signedtest'" <<< "$PACKAGE_INFO"
           grep -Fq "versionCode='5'" <<< "$PACKAGE_INFO"
           grep -Fq "versionName='2.2.1'" <<< "$PACKAGE_INFO"
