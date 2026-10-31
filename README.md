@@ -1,16 +1,22 @@
-# DukaBook v2.1 Branded BETA — TILLERN LABS
+# DukaBook v2.2 Retail Pilot BETA — TILLERN LABS
 
 DukaBook is the product; **TILLERN LABS** is its developer brand. This source package integrates the two approved DukaBook images (storefront/shop + receipt) into the home header, Flutter welcome screen, About/More page, Android launcher icons, and Android native launch artwork.
+
+## v2.2 pilot scope
+
+The v2.2 branch adds partial debt repayments, a stock-change audit trail, cash/M-Pesa received totals that include debt collections without double-counting sales, schema-v4 local database migration, and backup schema v2 with compatibility for v2.1 backups.
+
+**This is not yet a release for paying shops.** Signing is not persistent, backups are unencrypted, there is no app lock, and automated migration/restore testing is incomplete. See [PILOT_TEST_PLAN.md](PILOT_TEST_PLAN.md) and [SIGNING_AND_RELEASE.md](SIGNING_AND_RELEASE.md). The existing v2.1 build on main is unaffected.
 
 ## What's included
 
 - **English-only** time-of-day dashboard greeting: Good morning / Good afternoon / Good evening, with optional saved owner name.
 - Branded welcome screen: shop icon, DukaBook, Run Your Duka Smarter, and Powered by TILLERN LABS.
 - Real app icon: generated at the five Android launcher densities, replacing the default Flutter mark.
-- Android launcher title **DukaBook β** to distinguish the beta from v2.0. The public retail release will use **DukaBook**.
+- Android launcher title **DukaBook Pilot** to distinguish it from the installed v2.1 beta. The public retail release will use **DukaBook**.
 - In-app logo and wordmark with Duka green, Book orange, plus TILLERN LABS attribution.
 - SafeArea status bar fix, existing offline sales/stock/debts features, manual JSON backup and restore.
-- Separate Android application ID `com.eldoret.dukabook.duka_app.beta` to avoid overwriting the working v2.0 app.
+- Separate Android application ID `com.eldoret.dukabook.duka_app.pilot` to allow safe side-by-side installation without overwriting v2.1 app data.
 
 ## Source tree
 
@@ -39,7 +45,7 @@ RELEASE_CHECKLIST.md
 
 ## Release safety
 
-- **Not built or installed in this environment**; GitHub Actions must confirm compile succeeds and the user should test installation.
+- GitHub Actions checks build status; Android device functional tests and signing verification must still be completed.
 - Backup exports are **unencrypted JSON** and may contain customer contact details. Keep them private and test restore before relying on it.
 - Beta APK uses a temporary signing setup. Before paid distribution, create a persistent release keystore and store it securely in GitHub Actions secrets, with an offline backup. **Don't publish a commercial APK with ephemeral signing.**
 - Don't uninstall v2.0 until beta is proven and an intentional data migration is available.

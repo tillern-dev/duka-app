@@ -84,6 +84,9 @@ class _DukaScreenState extends State<DukaScreen> {
   List<Map<String, Object?>> _debts = [];
   List<Map<String, Object?>> _customers = [];
   List<Map<String, Object?>> _collections = [];
+  List<Map<String, Object?>> _stockMovements = [];
+  int _todayCashCollections = 0;
+  int _todayMpesaCollections = 0;
   int _todaySales = 0;
   int _todayCash = 0;
   int _todayMpesa = 0;
@@ -145,11 +148,11 @@ class _DukaScreenState extends State<DukaScreen> {
       final dbFile = path.join(await getDatabasesPath(), 'duka.db');
       _db = await openDatabase(
         dbFile,
-        version: 3,
+        version: 4,
         onCreate: (db, _) async {
           await db.execute('CREATE TABLE products(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, stock INTEGER NOT NULL, price INTEGER NOT NULL)');
           await db.execute('CREATE TABLE sales(id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL, amount INTEGER NOT NULL, date TEXT NOT NULL, product_id INTEGER, quantity INTEGER DEFAULT 1, payment_method TEXT DEFAULT \'Cash\', created_at TEXT, receipt_id TEXT)');
-          await db.execute('CREATE TABLE debts(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, amount INTEGER NOT NULL, date TEXT NOT NULL, status TEXT DEFAULT \'Unpaid\', notes TEXT, phone TEXT, due_date TEXT)');
+          await db.execute('CREATE TABLE debts(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, amount INTEGER NOT NULL, remaining_amount INTEGER NOT NULL, date TEXT NOT NULL, status TEXT DEFAULT \'Unpaid\', notes TEXT, phone TEXT, due_date TEXT)');
           await _createSupportingTables(db);
         },
         onUpgrade: (db, old, next) async {
@@ -167,6 +170,11 @@ class _DukaScreenState extends State<DukaScreen> {
             await db.execute('ALTER TABLE debts ADD COLUMN due_date TEXT');
             await _createSupportingTables(db);
           }
+          if (old < 4) {
+            await db.execute('ALTER TABLE debts ADD COLUMN remaining_amount INTEGER');
+            await db.execute("UPDATE debts SET remaining_amount = CASE WHEN status = 'Paid' THEN 0 ELSE amount END WHERE remaining_amount IS NULL");
+            await _createSupportingTables(db);
+          }
         },
       );
       await _refresh();
@@ -181,6 +189,7 @@ class _DukaScreenState extends State<DukaScreen> {
     await db.execute('CREATE TABLE IF NOT EXISTS customers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, phone TEXT)');
     await db.execute('CREATE TABLE IF NOT EXISTS collections(id INTEGER PRIMARY KEY AUTOINCREMENT, debt_id INTEGER NOT NULL, amount INTEGER NOT NULL, payment_method TEXT NOT NULL, date TEXT NOT NULL)');
     await db.execute('CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    await db.execute('CREATE TABLE IF NOT EXISTS stock_movements(id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, product_name TEXT NOT NULL, delta INTEGER NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL)');
   }
 
   Future<void> _refresh() async {
@@ -191,6 +200,8 @@ class _DukaScreenState extends State<DukaScreen> {
     final debts = await db.query('debts', orderBy: 'id DESC');
     final customers = await db.query('customers', orderBy: 'name COLLATE NOCASE');
     final collections = await db.query('collections', orderBy: 'id DESC', limit: 100);
+    final movements = await db.query('stock_movements', orderBy: 'id DESC', limit: 200);
+    final cashCollections = await db.rawQuery("SELECT COALESCE(SUM(CASE WHEN payment_method = 'Cash' THEN amount ELSE 0 END),0) AS cash, COALESCE(SUM(CASE WHEN payment_method = 'M-Pesa' THEN amount ELSE 0 END),0) AS mpesa FROM collections WHERE date = ?", [_today]);
     final settings = await db.query('settings');
     final totals = await db.rawQuery(
       "SELECT COALESCE(SUM(amount),0) AS total, "
@@ -207,6 +218,9 @@ class _DukaScreenState extends State<DukaScreen> {
       _debts = debts;
       _customers = customers;
       _collections = collections;
+      _stockMovements = movements;
+      _todayCashCollections = _number(cashCollections.first['cash']);
+      _todayMpesaCollections = _number(cashCollections.first['mpesa']);
       _owner = prefs['owner']?.trim().isNotEmpty == true ? prefs['owner']! : 'Owner';
       _shop = prefs['shop']?.trim().isNotEmpty == true ? prefs['shop']! : 'My Shop';
       _todaySales = _number(totals.first['total']);
@@ -294,17 +308,47 @@ class _DukaScreenState extends State<DukaScreen> {
     name.dispose(); price.dispose(); stock.dispose();
     if (ok != true) return;
     await _run(() async {
-      if (product == null) {
-        await _db!.insert('products', values);
-      } else {
-        await _db!.update('products', values, where: 'id = ?', whereArgs: [product['id']]);
-      }
+      await _db!.transaction((txn) async {
+        final stockNow = _number(values['stock']);
+        final productName = values['name'].toString();
+        int productId;
+        int delta;
+        if (product == null) {
+          productId = await txn.insert('products', values);
+          delta = stockNow;
+        } else {
+          productId = _number(product['id']);
+          final rows = await txn.query('products', where: 'id = ?', whereArgs: [productId], limit: 1);
+          if (rows.isEmpty) throw StateError('Product no longer exists');
+          delta = stockNow - _number(rows.first['stock']);
+          await txn.update('products', values, where: 'id = ?', whereArgs: [productId]);
+        }
+        if (delta != 0) {
+          await txn.insert('stock_movements', {
+            'product_id': productId, 'product_name': productName, 'delta': delta,
+            'reason': product == null ? 'Opening stock' : 'Manual stock adjustment',
+            'created_at': DateTime.now().toIso8601String(),
+          });
+        }
+      });
     }, success: 'Product saved');
   }
 
   Future<void> _deleteProduct(Map<String, Object?> item) async {
     if (!await _confirm('Remove product?', '${item['name']} will be removed from stock. Recorded sales will remain.', action: 'Remove')) return;
-    await _run(() async { await _db!.delete('products', where: 'id = ?', whereArgs: [item['id']]); }, success: 'Product removed');
+    await _run(() async {
+      await _db!.transaction((txn) async {
+        final rows = await txn.query('products', where: 'id = ?', whereArgs: [item['id']], limit: 1);
+        if (rows.isEmpty) return;
+        final current = rows.first;
+        await txn.insert('stock_movements', {
+          'product_id': current['id'], 'product_name': current['name'],
+          'delta': -_number(current['stock']), 'reason': 'Product removed',
+          'created_at': DateTime.now().toIso8601String(),
+        });
+        await txn.delete('products', where: 'id = ?', whereArgs: [item['id']]);
+      });
+    }, success: 'Product removed');
   }
 
   void _changeCart(Map<String, Object?> product, int delta) {
@@ -392,6 +436,10 @@ class _DukaScreenState extends State<DukaScreen> {
           if (changed != 1) throw StateError('Not enough stock for ${product['name']}');
           final amount = _number(product['price']) * entry.value;
           verifiedTotal += amount;
+          await txn.insert('stock_movements', {
+            'product_id': entry.key, 'product_name': product['name'],
+            'delta': -entry.value, 'reason': 'Sold', 'created_at': now,
+          });
           await txn.insert('sales', {
             'item': product['name'], 'amount': amount, 'date': _today,
             'product_id': entry.key, 'quantity': entry.value,
@@ -400,7 +448,7 @@ class _DukaScreenState extends State<DukaScreen> {
         }
         if (payment == 'Credit') {
           await txn.insert('debts', {
-            'name': name, 'amount': verifiedTotal, 'date': _today, 'status': 'Unpaid',
+            'name': name, 'amount': verifiedTotal, 'remaining_amount': verifiedTotal, 'date': _today, 'status': 'Unpaid',
             'notes': 'Sale receipt $receipt', 'phone': phone, 'due_date': due,
           });
           final found = await txn.query('customers', where: 'name = ? COLLATE NOCASE', whereArgs: [name], limit: 1);
@@ -446,37 +494,89 @@ class _DukaScreenState extends State<DukaScreen> {
     name.dispose(); amount.dispose(); phone.dispose();
     if (ok != true || a == null) return;
     await _run(() async => _db!.transaction((txn) async {
-      await txn.insert('debts', {'name': n, 'amount': a, 'date': _today, 'status': 'Unpaid', 'phone': p, 'due_date': dueString});
+      await txn.insert('debts', {'name': n, 'amount': a, 'remaining_amount': a, 'date': _today, 'status': 'Unpaid', 'phone': p, 'due_date': dueString});
       final old = await txn.query('customers', where: 'name = ? COLLATE NOCASE', whereArgs: [n], limit: 1);
       if (old.isEmpty) await txn.insert('customers', {'name': n, 'phone': p});
     }), success: 'Debt saved');
   }
 
-  Future<void> _markPaid(Map<String, Object?> debt) async {
+  // Accept instalments and full payments. A single SQLite transaction ensures
+  // the remaining balance, status and collection entry never disagree.
+  Future<void> _recordPayment(Map<String, Object?> debt) async {
+    final dueNow = _number(debt['remaining_amount']);
+    if (dueNow <= 0) { _alert('This debt has already been paid'); return; }
+    final amount = TextEditingController(text: dueNow.toString());
+    final form = GlobalKey<FormState>();
     String method = 'Cash';
-    final confirmed = await showDialog<bool>(context: context, builder: (c) => StatefulBuilder(builder: (c, update) => AlertDialog(
-      title: const Text('Record debt repayment'),
-      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('${debt['name']} owes ${_kes(_number(debt['amount']))}.'),
-        const SizedBox(height: 12),
-        DropdownButtonFormField<String>(value: method, decoration: const InputDecoration(labelText: 'Received via'), items: const [
-          DropdownMenuItem(value: 'Cash', child: Text('Cash')),
-          DropdownMenuItem(value: 'M-Pesa', child: Text('M-Pesa')),
-        ], onChanged: (v) => update(() => method = v ?? 'Cash')),
-        const SizedBox(height: 8),
-        const Text('This records a collection, not a second sale.', style: TextStyle(color: Colors.black54, fontSize: 12)),
-      ]),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')),
-        FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('Mark paid')),
-      ],
-    )));
-    if (confirmed != true) return;
-    await _run(() async => _db!.transaction((txn) async {
-      final updated = await txn.update('debts', {'status': 'Paid'}, where: "id = ? AND COALESCE(status, 'Unpaid') != 'Paid'", whereArgs: [debt['id']]);
-      if (updated != 1) throw StateError('Already paid or missing');
-      await txn.insert('collections', {'debt_id': debt['id'], 'amount': _number(debt['amount']), 'payment_method': method, 'date': _today});
-    }), success: 'Debt marked paid');
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => StatefulBuilder(
+        builder: (dialog, update) => AlertDialog(
+          title: const Text('Record repayment'),
+          content: Form(
+            key: form,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Text('Balance: ${_kes(dueNow)}'),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: amount,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Amount received (KES)'),
+                validator: (value) {
+                  final parsed = int.tryParse(value?.trim() ?? '');
+                  if (parsed == null || parsed <= 0) return 'Enter a positive amount';
+                  if (parsed > dueNow) return 'Cannot exceed outstanding balance';
+                  return null;
+                },
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                value: method,
+                decoration: const InputDecoration(labelText: 'Received via'),
+                items: const [
+                  DropdownMenuItem(value: 'Cash', child: Text('Cash')),
+                  DropdownMenuItem(value: 'M-Pesa', child: Text('M-Pesa')),
+                ],
+                onChanged: (value) => update(() => method = value ?? 'Cash'),
+              ),
+              const SizedBox(height: 8),
+              const Text('A repayment is not counted as a second sale.',
+                  style: TextStyle(color: Colors.black54, fontSize: 12)),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialog, false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () {
+                if (form.currentState!.validate()) Navigator.pop(dialog, true);
+              },
+              child: const Text('Record payment'),
+            ),
+          ],
+        ),
+      ),
+    );
+    final paid = int.tryParse(amount.text.trim()) ?? 0;
+    amount.dispose();
+    if (confirmed != true || paid <= 0) return;
+    await _run(() async {
+      await _db!.transaction((txn) async {
+        final rows = await txn.query('debts', where: 'id = ?', whereArgs: [debt['id']], limit: 1);
+        if (rows.isEmpty) throw StateError('Debt not found');
+        final current = _number(rows.first['remaining_amount']);
+        if (current <= 0 || paid > current) throw StateError('Balance changed; refresh and retry');
+        final remaining = current - paid;
+        final updated = await txn.update('debts', {
+          'remaining_amount': remaining,
+          'status': remaining == 0 ? 'Paid' : 'Unpaid',
+        }, where: 'id = ? AND remaining_amount = ?', whereArgs: [debt['id'], current]);
+        if (updated != 1) throw StateError('Balance changed; refresh and retry');
+        await txn.insert('collections', {
+          'debt_id': debt['id'], 'amount': paid,
+          'payment_method': method, 'date': _today,
+        });
+      });
+    }, success: 'Repayment recorded');
   }
 
   String? _kenyanPhone(String source) {
@@ -517,7 +617,7 @@ class _DukaScreenState extends State<DukaScreen> {
     final phone = await _ensurePhone(debt);
     if (phone == null) return;
     final uri = whatsapp
-        ? Uri.https('wa.me', '/$phone', {'text': 'Hello ${debt['name']}, this is a friendly reminder of your DukaBook balance of ${_kes(_number(debt['amount']))} at $_shop. Thank you.'})
+        ? Uri.https('wa.me', '/$phone', {'text': 'Hello ${debt['name']}, this is a friendly reminder of your DukaBook balance of ${_kes(_number(debt['remaining_amount']))} at $_shop. Thank you.'})
         : Uri(scheme: 'tel', path: '+$phone');
     try {
       final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -528,7 +628,7 @@ class _DukaScreenState extends State<DukaScreen> {
   }
 
   Future<void> _remindAll() async {
-    final outstanding = _debts.where((d) => d['status'] != 'Paid').toList();
+    final outstanding = _debts.where((d) => _number(d['remaining_amount']) > 0).toList();
     if (outstanding.isEmpty) { _alert('No outstanding debts'); return; }
     await showModalBottomSheet<void>(context: context, isScrollControlled: true, showDragHandle: true, builder: (c) => SafeArea(child: Padding(
       padding: const EdgeInsets.all(20),
@@ -539,7 +639,7 @@ class _DukaScreenState extends State<DukaScreen> {
         const SizedBox(height: 12),
         SizedBox(height: 250, child: ListView(children: outstanding.map((d) => ListTile(
           title: Text(d['name'].toString()),
-          subtitle: Text(_kes(_number(d['amount']))),
+          subtitle: Text(_kes(_number(d['remaining_amount']))),
           trailing: IconButton(tooltip: 'Open WhatsApp draft', icon: const Icon(Icons.chat, color: green), onPressed: () {
             Navigator.pop(c);
             _contact(d, whatsapp: true);
@@ -600,17 +700,18 @@ class _DukaScreenState extends State<DukaScreen> {
   // a destination; no backups are sent to TILLERN LABS or any server.
   static const _backupFormat = 'dukabook-offline-json';
   static const _backupTables = <String>[
-    'products', 'sales', 'debts', 'customers', 'collections', 'settings',
+    'products', 'sales', 'debts', 'customers', 'collections', 'settings', 'stock_movements',
   ];
   static const _backupColumns = <String, Set<String>>{
     'products': {'id', 'name', 'stock', 'price'},
     'sales': {'id', 'item', 'amount', 'date', 'product_id', 'quantity',
       'payment_method', 'created_at', 'receipt_id'},
-    'debts': {'id', 'name', 'amount', 'date', 'status', 'notes',
+    'debts': {'id', 'name', 'amount', 'remaining_amount', 'date', 'status', 'notes',
       'phone', 'due_date'},
     'customers': {'id', 'name', 'phone'},
     'collections': {'id', 'debt_id', 'amount', 'payment_method', 'date'},
     'settings': {'key', 'value'},
+    'stock_movements': {'id', 'product_id', 'product_name', 'delta', 'reason', 'created_at'},
   };
 
   // Numeric fields must remain numeric. Never let a malformed JSON backup
@@ -618,10 +719,11 @@ class _DukaScreenState extends State<DukaScreen> {
   static const _backupNumbers = <String, Set<String>>{
     'products': {'id', 'stock', 'price'},
     'sales': {'id', 'amount', 'product_id', 'quantity'},
-    'debts': {'id', 'amount'},
+    'debts': {'id', 'amount', 'remaining_amount'},
     'customers': {'id'},
     'collections': {'id', 'debt_id', 'amount'},
     'settings': <String>{},
+    'stock_movements': {'id', 'product_id', 'delta'},
   };
 
   Future<Map<String, Object?>> _backupSnapshot() async {
@@ -637,9 +739,9 @@ class _DukaScreenState extends State<DukaScreen> {
     }, exclusive: false);
     return {
       'format': _backupFormat,
-      'schema': 1,
+      'schema': 2,
       'created_at': DateTime.now().toIso8601String(),
-      'app_version': '2.1.0-beta',
+      'app_version': '2.2.0-pilot',
       'shop_name': _shop,
       'tables': tables,
     };
@@ -673,34 +775,47 @@ class _DukaScreenState extends State<DukaScreen> {
   }
 
   Map<String, List<Map<String, Object?>>> _validatedBackup(Object? decoded) {
-    if (decoded is! Map<String, dynamic> ||
-        decoded['format'] != _backupFormat || decoded['schema'] != 1) {
+    if (decoded is! Map<String, dynamic> || decoded['format'] != _backupFormat) {
       throw const FormatException('Not a supported DukaBook backup');
     }
+    final schema = decoded['schema'];
+    if (schema != 1 && schema != 2) {
+      throw const FormatException('Unsupported backup version');
+    }
+    final legacy = schema == 1;
+    final expectedTables = legacy
+        ? _backupTables.where((table) => table != 'stock_movements').toList()
+        : _backupTables;
     final rawTables = decoded['tables'];
     if (rawTables is! Map<String, dynamic> ||
-        rawTables.length != _backupTables.length ||
-        rawTables.keys.any((key) => !_backupTables.contains(key))) {
+        rawTables.length != expectedTables.length ||
+        rawTables.keys.any((key) => !expectedTables.contains(key))) {
       throw const FormatException('Backup tables are missing or unsupported');
     }
     final verified = <String, List<Map<String, Object?>>>{};
-    for (final table in _backupTables) {
+    for (final table in expectedTables) {
       final rawRows = rawTables[table];
       if (rawRows is! List || rawRows.length > 50000) {
         throw FormatException('Invalid or oversized $table backup');
       }
+      final columns = Set<String>.from(_backupColumns[table]!);
+      if (legacy && table == 'debts') columns.remove('remaining_amount');
       final rows = <Map<String, Object?>>[];
       for (final entry in rawRows) {
         if (entry is! Map<String, dynamic> ||
-            entry.keys.toSet().length != _backupColumns[table]!.length ||
-            entry.keys.any((key) => !_backupColumns[table]!.contains(key)) ||
-            entry.values.any((v) => v != null && v is! String && v is! int)) {
+            entry.keys.length != columns.length ||
+            entry.keys.any((key) => !columns.contains(key)) ||
+            entry.values.any((value) => value != null && value is! String && value is! int)) {
           throw FormatException('Invalid $table record');
         }
+        final row = Map<String, Object?>.from(entry);
+        if (legacy && table == 'debts') {
+          row['remaining_amount'] = row['status'] == 'Paid' ? 0 : row['amount'];
+        }
         for (final column in _backupColumns[table]!) {
-          final value = entry[column];
+          final value = row[column];
           if (value != null && _backupNumbers[table]!.contains(column) &&
-              (value is! int || value < 0)) {
+              (value is! int || (value < 0 && !(table == 'stock_movements' && column == 'delta')))) {
             throw FormatException('Invalid $table numeric value');
           }
           if (value != null && !_backupNumbers[table]!.contains(column) &&
@@ -711,10 +826,19 @@ class _DukaScreenState extends State<DukaScreen> {
             throw FormatException('Invalid $table record ID');
           }
         }
-        rows.add(Map<String, Object?>.from(entry));
+        if (table == 'debts') {
+          final amount = row['amount'];
+          final remaining = row['remaining_amount'];
+          if (amount is! int || remaining is! int || remaining > amount ||
+              (remaining == 0) != (row['status'] == 'Paid')) {
+            throw const FormatException('Invalid debt balance in backup');
+          }
+        }
+        rows.add(row);
       }
       verified[table] = rows;
     }
+    if (legacy) verified['stock_movements'] = [];
     return verified;
   }
 
@@ -811,8 +935,8 @@ class _DukaScreenState extends State<DukaScreen> {
 
   Widget _home() {
     final low = _products.where((p) => _number(p['stock']) <= 5).toList();
-    final open = _debts.where((d) => d['status'] != 'Paid').toList();
-    final outstanding = open.fold<int>(0, (a, d) => a + _number(d['amount']));
+    final open = _debts.where((d) => _number(d['remaining_amount']) > 0).toList();
+    final outstanding = open.fold<int>(0, (a, d) => a + _number(d['remaining_amount']));
     return RefreshIndicator(onRefresh: _refresh, child: ListView(padding: const EdgeInsets.fromLTRB(16, 10, 16, 24), children: [
       Row(children: [
         ClipRRect(
@@ -845,9 +969,10 @@ class _DukaScreenState extends State<DukaScreen> {
       ]),
       const SizedBox(height: 12),
       Card(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10), child: Wrap(spacing: 15, runSpacing: 5, children: [
-        Text('Cash: ${_kes(_todayCash)}', style: const TextStyle(color: deepGreen)),
-        Text('M-Pesa: ${_kes(_todayMpesa)}', style: const TextStyle(color: deepGreen)),
-        Text('Credit: ${_kes(_todayCredit)}', style: const TextStyle(color: orange)),
+        Text('Cash received: ${_kes(_todayCash + _todayCashCollections)}', style: const TextStyle(color: deepGreen)),
+        Text('M-Pesa received: ${_kes(_todayMpesa + _todayMpesaCollections)}', style: const TextStyle(color: deepGreen)),
+        Text('Credit sales: ${_kes(_todayCredit)}', style: const TextStyle(color: orange)),
+        const Text('Collections included in receipts, not counted twice in sales.', style: TextStyle(fontSize: 11, color: Colors.black54)),
       ]))),
       _heading('Low Stock Items', onView: () => _switchTab(1)),
       if (low.isEmpty) _empty('No low-stock items. Add products to begin.', icon: Icons.inventory_2_outlined)
@@ -981,24 +1106,24 @@ class _DukaScreenState extends State<DukaScreen> {
         const SizedBox(width: 11),
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(name, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
-          Text('Owes ${_kes(_number(debt['amount']))}', style: const TextStyle(fontSize: 13)),
+          Text('Balance ${_kes(_number(debt['remaining_amount']))} of ${_kes(_number(debt['amount']))}', style: const TextStyle(fontSize: 13)),
         ])),
       ]),
       Padding(padding: const EdgeInsets.only(top: 10, bottom: 12), child: Text(label, style: TextStyle(color: badgeColor, fontWeight: FontWeight.w700, fontSize: 12))),
       Wrap(spacing: 7, runSpacing: 7, children: [
         OutlinedButton.icon(onPressed: () => _contact(debt, whatsapp: false), icon: const Icon(Icons.call_outlined, size: 16), label: const Text('Call')),
         OutlinedButton.icon(onPressed: () => _contact(debt, whatsapp: true), icon: const Icon(Icons.chat_outlined, size: 16), label: const Text('WhatsApp')),
-        FilledButton.icon(onPressed: () => _markPaid(debt), style: FilledButton.styleFrom(backgroundColor: orange), icon: const Icon(Icons.check_circle_outline, size: 16), label: const Text('Mark Paid')),
+        FilledButton.icon(onPressed: () => _recordPayment(debt), style: FilledButton.styleFrom(backgroundColor: orange), icon: const Icon(Icons.payments_outlined, size: 16), label: const Text('Record Payment')),
       ]),
     ])));
   }
 
   Widget _debtPage() {
-    final open = _debts.where((d) => d['status'] != 'Paid').toList();
+    final open = _debts.where((d) => _number(d['remaining_amount']) > 0).toList();
     if (_sortDueFirst) {
       open.sort((a, b) => (a['due_date']?.toString() ?? '9999').compareTo(b['due_date']?.toString() ?? '9999'));
     }
-    final total = open.fold<int>(0, (sum, debt) => sum + _number(debt['amount']));
+    final total = open.fold<int>(0, (sum, debt) => sum + _number(debt['remaining_amount']));
     return ListView(padding: const EdgeInsets.all(16), children: [
       Row(children: [
         const Icon(Icons.menu_book_rounded, color: orange, size: 29),
@@ -1033,7 +1158,7 @@ class _DukaScreenState extends State<DukaScreen> {
         ..._debts.where((d) => d['status'] == 'Paid').map((d) => Card(child: ListTile(
           leading: const Icon(Icons.check_circle, color: green),
           title: Text(d['name'].toString()),
-          subtitle: const Text('Paid'),
+          subtitle: const Text('Paid in full'),
           trailing: Text(_kes(_number(d['amount']))),
         ))),
       ],
@@ -1047,7 +1172,9 @@ class _DukaScreenState extends State<DukaScreen> {
       const Divider(height: 1),
       ListTile(leading: const Icon(Icons.people_alt_outlined, color: green), title: const Text('Customers'), subtitle: const Text('Saved customer names and numbers'), trailing: const Icon(Icons.chevron_right), onTap: () => _goTo('Customers')),
       const Divider(height: 1),
-      ListTile(leading: const Icon(Icons.payments_outlined, color: green), title: const Text('Debt collections'), subtitle: const Text('Repayments, kept separate from sales'), trailing: const Icon(Icons.chevron_right), onTap: () => _goTo('Collections')),
+      ListTile(leading: const Icon(Icons.payments_outlined, color: green), title: const Text('Debt collections'), subtitle: const Text('Instalments, kept separate from sales'), trailing: const Icon(Icons.chevron_right), onTap: () => _goTo('Collections')),
+      const Divider(height: 1),
+      ListTile(leading: const Icon(Icons.history, color: green), title: const Text('Stock movement history'), subtitle: const Text('All sales, opening stock and stock adjustments'), trailing: const Icon(Icons.chevron_right), onTap: () => _goTo('Stock movements')),
       const Divider(height: 1),
       ListTile(leading: const Icon(Icons.settings_outlined, color: green), title: const Text('Shop settings'), subtitle: const Text('Your name and shop name'), trailing: const Icon(Icons.chevron_right), onTap: _settingsDialog),
       const Divider(height: 1),
@@ -1067,10 +1194,23 @@ class _DukaScreenState extends State<DukaScreen> {
     const SizedBox(height: 4),
     const Text('Offline on this phone • shop data stays on this device unless you export it', textAlign: TextAlign.center, style: TextStyle(color: Colors.black54, fontSize: 11)),
     const SizedBox(height: 8),
-    const Text('Beta 2.1 • Offline backup files are unencrypted. Keep copies somewhere private and verify restore on a test device before trusting them with shop records.', textAlign: TextAlign.center, style: TextStyle(color: Colors.black54, fontSize: 12)),
+    const Text('Beta 2.2 • Offline backup files are unencrypted. Keep copies somewhere private and verify restore on a test device before trusting them with shop records.', textAlign: TextAlign.center, style: TextStyle(color: Colors.black54, fontSize: 12)),
   ]);
 
   Widget _detailPage() {
+    if (_subPage == 'Stock movements') {
+      return ListView(padding: const EdgeInsets.all(16), children: [
+        const Text('An audit trail of stock changes. Older changes before this update are not available.', style: TextStyle(color: Colors.black54)),
+        if (_stockMovements.isEmpty) _empty('No stock movements recorded yet'),
+        ..._stockMovements.map((m) => Card(child: ListTile(
+          leading: Icon(_number(m['delta']) < 0 ? Icons.remove_circle_outline : Icons.add_circle_outline, color: _number(m['delta']) < 0 ? orange : deepGreen),
+          title: Text(m['product_name']?.toString() ?? 'Product', style: const TextStyle(fontWeight: FontWeight.w700)),
+          subtitle: Text("${m['reason']} • ${m['created_at']?.toString().split('T').first ?? ''}"),
+          trailing: Text('${_number(m['delta']) > 0 ? '+' : ''}${m['delta']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+        ))),
+        if (_stockMovements.length == 200) const Text('Showing latest 200 changes. Full history is retained in the database.'),
+      ]);
+    }
     if (_subPage == 'Customers') {
       return ListView(padding: const EdgeInsets.all(16), children: [
         FilledButton.icon(onPressed: _customerDialog, icon: const Icon(Icons.person_add_alt_1), label: const Text('Add customer')),
