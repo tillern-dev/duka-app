@@ -1,6 +1,6 @@
 # DukaBook permanent Android signing — first-time setup
 
-**Status:** CI signing is configured, but a signed APK is **not yet released**. Create and store the private signing key under the owner's control first.
+**Status:** The initial v2.2.0+4 signed-test APK successfully built and passed the GitHub Actions signature verification. The owner installed it alongside the Pilot. A v2.2.1+5 signed in-place update is now prepared for the next verification; preservation of test records has not yet been confirmed.
 
 The existing v2.1 beta and v2.2 Pilot are not replaced. Signed testing uses a separate Android identity: `com.eldoret.dukabook.duka_app.signedtest`, with launcher name **DukaBook Signed Test**. It has its own empty database when first installed.
 
@@ -39,14 +39,14 @@ Never post the base64 text, keystore, or passwords to ChatGPT, GitHub issues, pu
 2. Select **Build Permanently Signed DukaBook Test APK**.
 3. Click **Run workflow**, choose branch **feature/v2-2-retail-pilot**, and confirm the explicit acknowledgement.
 4. Open the build run and require **Success** on the **Verify APK signature** step.
-5. Download the artifact named `DukaBook-v2.2-Permanently-Signed-Test-APK`.
+5. For the initial installation, download artifact `DukaBook-v2.2-Permanently-Signed-Test-APK` from the successful historical workflow run. For the update test, use `DukaBook-v2.2.1-Signed-Update-Test-APK` from a new successful manual workflow run.
 6. Install **DukaBook Signed Test** alongside the existing **DukaBook Pilot**. They use different package IDs, and **no customer data transfers automatically**.
 
 If secrets are missing or invalid, the build should fail before signing or uploading an APK.
 
 ## 4. Prove updates don't destroy data
 
-After the *first* signed-test APK is installed, add dummy products, sales, repayments and stock movements. Build a **second APK signed with the exact same keystore, alias and application ID**, but with a **higher Android version code** (for example, `2.2.1+5`). Install that second APK over the signed-test app. Confirm all test records remain intact and that package ID and signing-certificate SHA-256 fingerprint match.
+After the *first* signed-test APK is installed, **add dummy products, sales, repayments and stock movements before upgrading**. The manual signed-test workflow now builds **v2.2.1+5** with the exact same application ID and signing credentials as the original v2.2.0+4 build. Run the workflow on `feature/v2-2-retail-pilot`, download the v2.2.1 artifact, and install it **as an update over DukaBook Signed Test without uninstalling**. Confirm all test records remain intact and both signed APKs use the same certificate SHA-256 fingerprint. Do not attempt this update on DukaBook Pilot.
 
 Do not call the signing system validated until the update-in-place test passes. Do not uninstall the existing pilot to test this.
 
