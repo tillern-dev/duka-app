@@ -1,4 +1,4 @@
-name: Build DukaBook Android APK
+name: Build DukaBook v2.1 Branded Beta APK
 
 on:
   push:
@@ -14,34 +14,31 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
-
       - name: Install Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.22.0'
           channel: stable
           cache: true
-
-      # The repository originally had no Android/gradle scaffold. Create one
-      # but restore the real app entry point afterwards, never a demo screen.
-      - name: Create missing Flutter Android project files
+      - name: Create Android project without replacing app source
         run: |
           cp lib/main.dart /tmp/dukabook-main.dart
           cp pubspec.yaml /tmp/dukabook-pubspec.yaml
           flutter create . --org com.eldoret.dukabook --project-name duka_app --platforms android
           cp /tmp/dukabook-main.dart lib/main.dart
           cp /tmp/dukabook-pubspec.yaml pubspec.yaml
-
+      - name: Apply DukaBook beta app name, icon, and splash art
+        run: python3 scripts/apply_android_branding.py
       - name: Get packages
         run: flutter pub get
-
-      - name: Build release APK
+      - name: Analyze Dart source
+        run: flutter analyze --no-fatal-infos lib/main.dart
+      - name: Build beta APK
         run: flutter build apk --release
-
-      - name: Upload installable APK
+      - name: Upload beta APK
         uses: actions/upload-artifact@v4
         with:
-          name: DukaBook-v2-Android-APK
+          name: DukaBook-v2.1-Branded-Beta-APK
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14

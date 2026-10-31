@@ -1,4 +1,12 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:cross_file/cross_file.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:path/path.dart' as path;
 import 'package:sqflite/sqflite.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -9,6 +17,7 @@ const deepGreen = Color(0xFF087A48);
 const orange = Color(0xFFF66B11);
 const ink = Color(0xFF1D2635);
 const background = Color(0xFFF7F8F7);
+const brandGold = Color(0xFF946C20); // TILLERN LABS attribution accent
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -58,6 +67,7 @@ class DukaScreen extends StatefulWidget {
 class _DukaScreenState extends State<DukaScreen> {
   Database? _db;
   bool _loading = true;
+  bool _showWelcome = true;
   String? _error;
   int _tab = 0;
   String? _subPage;
@@ -90,6 +100,21 @@ class _DukaScreenState extends State<DukaScreen> {
     return 'KES ${n < 0 ? '-' : ''}${parts.join(',')}';
   }
 
+  // All owner-facing greetings stay in English. The first launch can greet
+  // someone even before they configure their name in Shop settings.
+  String get _englishGreeting {
+    final hour = DateTime.now().hour;
+    final greeting = hour < 12
+        ? 'Good morning'
+        : hour < 17
+            ? 'Good afternoon'
+            : 'Good evening';
+    final name = _owner.trim();
+    return name.isEmpty || name == 'Owner'
+        ? '$greeting! 👋'
+        : '$greeting, $name! 👋';
+  }
+
   String _prettyDate() {
     final d = DateTime.now();
     const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -100,7 +125,12 @@ class _DukaScreenState extends State<DukaScreen> {
   @override
   void initState() {
     super.initState();
+    // Show a short offline-first brand welcome. Database initialization happens
+    // at the same time so the animation does not postpone data loading.
     _openDatabase();
+    Future<void>.delayed(const Duration(milliseconds: 1300), () {
+      if (mounted) setState(() => _showWelcome = false);
+    });
   }
 
   @override
@@ -487,7 +517,7 @@ class _DukaScreenState extends State<DukaScreen> {
     final phone = await _ensurePhone(debt);
     if (phone == null) return;
     final uri = whatsapp
-        ? Uri.https('wa.me', '/$phone', {'text': 'Habari ${debt['name']}, this is a friendly reminder of your DukaBook balance of ${_kes(_number(debt['amount']))} at $_shop. Thank you.'})
+        ? Uri.https('wa.me', '/$phone', {'text': 'Hello ${debt['name']}, this is a friendly reminder of your DukaBook balance of ${_kes(_number(debt['amount']))} at $_shop. Thank you.'})
         : Uri(scheme: 'tel', path: '+$phone');
     try {
       final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -566,6 +596,184 @@ class _DukaScreenState extends State<DukaScreen> {
     }), success: 'Settings saved');
   }
 
+  // Portable offline backups. Share only when the shop owner deliberately chooses
+  // a destination; no backups are sent to TILLERN LABS or any server.
+  static const _backupFormat = 'dukabook-offline-json';
+  static const _backupTables = <String>[
+    'products', 'sales', 'debts', 'customers', 'collections', 'settings',
+  ];
+  static const _backupColumns = <String, Set<String>>{
+    'products': {'id', 'name', 'stock', 'price'},
+    'sales': {'id', 'item', 'amount', 'date', 'product_id', 'quantity',
+      'payment_method', 'created_at', 'receipt_id'},
+    'debts': {'id', 'name', 'amount', 'date', 'status', 'notes',
+      'phone', 'due_date'},
+    'customers': {'id', 'name', 'phone'},
+    'collections': {'id', 'debt_id', 'amount', 'payment_method', 'date'},
+    'settings': {'key', 'value'},
+  };
+
+  // Numeric fields must remain numeric. Never let a malformed JSON backup
+  // silently turn prices, stock or payments into text in SQLite.
+  static const _backupNumbers = <String, Set<String>>{
+    'products': {'id', 'stock', 'price'},
+    'sales': {'id', 'amount', 'product_id', 'quantity'},
+    'debts': {'id', 'amount'},
+    'customers': {'id'},
+    'collections': {'id', 'debt_id', 'amount'},
+    'settings': <String>{},
+  };
+
+  Future<Map<String, Object?>> _backupSnapshot() async {
+    final db = _db;
+    if (db == null) throw StateError('Shop database is not ready');
+    final tables = <String, List<Map<String, Object?>>>{};
+    // Read all tables inside one consistent transaction. This is important
+    // when sales or stock records might change during an export.
+    await db.transaction((txn) async {
+      for (final name in _backupTables) {
+        tables[name] = await txn.query(name);
+      }
+    }, exclusive: false);
+    return {
+      'format': _backupFormat,
+      'schema': 1,
+      'created_at': DateTime.now().toIso8601String(),
+      'app_version': '2.1.0-beta',
+      'shop_name': _shop,
+      'tables': tables,
+    };
+  }
+
+  Future<void> _exportBackup() async {
+    if (_db == null) return;
+    final proceed = await _confirm(
+      'Export shop backup?',
+      'This file contains customer names, phone numbers, sales and debts. '
+      'It is NOT encrypted. Save it in a private place you control. '
+      'Anyone with the file can read it.',
+      action: 'Create backup',
+    );
+    if (!proceed) return;
+    try {
+      final backup = await _backupSnapshot();
+      final temp = await getTemporaryDirectory();
+      final stamp = DateTime.now().toIso8601String()
+          .replaceAll(RegExp(r'[^0-9]'), '').substring(0, 14);
+      final file = File(path.join(temp.path, 'DukaBook_Backup_$stamp.json'));
+      await file.writeAsString(jsonEncode(backup), flush: true);
+      if (!mounted) return;
+      _alert('Choose Files, Drive, or another private destination to save your backup.');
+      await Share.shareXFiles([XFile(file.path, mimeType: 'application/json')],
+          subject: 'DukaBook offline shop backup');
+      // Opening the share sheet is not proof the user saved a backup.
+    } catch (e) {
+      _alert('Backup could not be shared: $e');
+    }
+  }
+
+  Map<String, List<Map<String, Object?>>> _validatedBackup(Object? decoded) {
+    if (decoded is! Map<String, dynamic> ||
+        decoded['format'] != _backupFormat || decoded['schema'] != 1) {
+      throw const FormatException('Not a supported DukaBook backup');
+    }
+    final rawTables = decoded['tables'];
+    if (rawTables is! Map<String, dynamic> ||
+        rawTables.length != _backupTables.length ||
+        rawTables.keys.any((key) => !_backupTables.contains(key))) {
+      throw const FormatException('Backup tables are missing or unsupported');
+    }
+    final verified = <String, List<Map<String, Object?>>>{};
+    for (final table in _backupTables) {
+      final rawRows = rawTables[table];
+      if (rawRows is! List || rawRows.length > 50000) {
+        throw FormatException('Invalid or oversized $table backup');
+      }
+      final rows = <Map<String, Object?>>[];
+      for (final entry in rawRows) {
+        if (entry is! Map<String, dynamic> ||
+            entry.keys.toSet().length != _backupColumns[table]!.length ||
+            entry.keys.any((key) => !_backupColumns[table]!.contains(key)) ||
+            entry.values.any((v) => v != null && v is! String && v is! int)) {
+          throw FormatException('Invalid $table record');
+        }
+        for (final column in _backupColumns[table]!) {
+          final value = entry[column];
+          if (value != null && _backupNumbers[table]!.contains(column) &&
+              (value is! int || value < 0)) {
+            throw FormatException('Invalid $table numeric value');
+          }
+          if (value != null && !_backupNumbers[table]!.contains(column) &&
+              value is! String) {
+            throw FormatException('Invalid $table text value');
+          }
+          if ((column == 'id' || column == 'debt_id') && value is int && value == 0) {
+            throw FormatException('Invalid $table record ID');
+          }
+        }
+        rows.add(Map<String, Object?>.from(entry));
+      }
+      verified[table] = rows;
+    }
+    return verified;
+  }
+
+  Future<void> _restoreBackup() async {
+    if (_db == null) return;
+    try {
+      final picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        allowMultiple: false,
+        withData: true,
+      );
+      if (picked == null || picked.files.isEmpty) return;
+      final selected = picked.files.single;
+      if (selected.size > 20 * 1024 * 1024) {
+        throw const FormatException('Backup is too large (maximum 20 MB)');
+      }
+      final bytes = selected.bytes ??
+          (selected.path == null ? null : await File(selected.path!).readAsBytes());
+      if (bytes == null) {
+        throw const FormatException('Cannot read the selected backup file');
+      }
+      final decoded = jsonDecode(utf8.decode(bytes));
+      final validated = _validatedBackup(decoded);
+      final meta = decoded as Map<String, dynamic>;
+      if (!mounted) return;
+      final shopName = meta['shop_name']?.toString() ?? 'Unknown shop';
+      final sales = validated['sales']!.length;
+      final debts = validated['debts']!.length;
+      final confirmed = await _confirm(
+        'Replace ALL local records?',
+        'Backup shop: $shopName\nSales lines: $sales\nDebt records: $debts\n\n'
+        'THIS WILL REPLACE your current products, sales, debts, '
+        'customers, collections and settings. This cannot be undone. '
+        'Export and securely save your current data first.',
+        action: 'Replace records',
+      );
+      if (!confirmed) return;
+      // SQLite transaction rolls back the entire restore if any insert fails.
+      // The existing database is never deleted or closed during this process.
+      await _db!.transaction((txn) async {
+        for (final table in _backupTables.reversed) {
+          await txn.delete(table);
+        }
+        for (final table in _backupTables) {
+          for (final row in validated[table]!) {
+            await txn.insert(table, row);
+          }
+        }
+      });
+      if (!mounted) return;
+      setState(() { _cart.clear(); _tab = 0; _subPage = null; });
+      await _refresh();
+      _alert('Backup restored. Check your sales, stock and debts.');
+    } catch (e) {
+      _alert('Restore failed; your existing records were kept: $e');
+    }
+  }
+
   void _switchTab(int index) => setState(() { _tab = index; _subPage = null; });
   void _goTo(String page) => setState(() => _subPage = page);
 
@@ -607,15 +815,27 @@ class _DukaScreenState extends State<DukaScreen> {
     final outstanding = open.fold<int>(0, (a, d) => a + _number(d['amount']));
     return RefreshIndicator(onRefresh: _refresh, child: ListView(padding: const EdgeInsets.fromLTRB(16, 10, 16, 24), children: [
       Row(children: [
-        const Icon(Icons.storefront_rounded, color: green, size: 35),
-        const SizedBox(width: 8),
-        const Expanded(child: Text('DukaBook', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 27, color: ink))),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: Image.asset('assets/branding/storefront_icon.png', width: 40, height: 40, fit: BoxFit.cover),
+        ),
+        const SizedBox(width: 9),
+        const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text.rich(TextSpan(children: [
+            TextSpan(text: 'Duka', style: TextStyle(color: deepGreen)),
+            TextSpan(text: 'Book', style: TextStyle(color: orange)),
+          ]), style: TextStyle(fontWeight: FontWeight.w900, fontSize: 26)),
+          Text('by TILLERN LABS', style: TextStyle(fontSize: 10, color: brandGold, fontWeight: FontWeight.w800, letterSpacing: .8)),
+        ])),
         IconButton(tooltip: 'Low stock alerts', onPressed: () => _switchTab(1), icon: const Icon(Icons.notifications_none)),
         IconButton(tooltip: 'Shop settings', onPressed: _settingsDialog, icon: const Icon(Icons.account_circle, color: green)),
       ]),
       const SizedBox(height: 19),
-      Text('Habari, $_owner 👋', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 22)),
+      Text(_englishGreeting, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 22)),
       const SizedBox(height: 3),
+      const Text('Welcome back! Your shop is ready for business.',
+          style: TextStyle(fontSize: 13, color: Colors.black54)),
+      const SizedBox(height: 5),
       Text('${_prettyDate()} • $_shop', style: const TextStyle(color: Colors.black54)),
       const SizedBox(height: 19),
       Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -830,11 +1050,24 @@ class _DukaScreenState extends State<DukaScreen> {
       ListTile(leading: const Icon(Icons.payments_outlined, color: green), title: const Text('Debt collections'), subtitle: const Text('Repayments, kept separate from sales'), trailing: const Icon(Icons.chevron_right), onTap: () => _goTo('Collections')),
       const Divider(height: 1),
       ListTile(leading: const Icon(Icons.settings_outlined, color: green), title: const Text('Shop settings'), subtitle: const Text('Your name and shop name'), trailing: const Icon(Icons.chevron_right), onTap: _settingsDialog),
+      const Divider(height: 1),
+      ListTile(leading: const Icon(Icons.ios_share, color: green), title: const Text('Export offline backup'), subtitle: const Text('Save a copy of ALL shop records as a JSON file'), trailing: const Icon(Icons.chevron_right), onTap: _exportBackup),
+      const Divider(height: 1),
+      ListTile(leading: const Icon(Icons.restore, color: orange), title: const Text('Restore from backup'), subtitle: const Text('REPLACES all local records after confirmation'), trailing: const Icon(Icons.chevron_right), onTap: _restoreBackup),
     ])),
-    const SizedBox(height: 20),
-    const Text('DukaBook • Offline on this phone', textAlign: TextAlign.center, style: TextStyle(color: Colors.black45)),
+    const SizedBox(height: 16),
+    Card(child: Padding(
+      padding: const EdgeInsets.all(12),
+      child: Image.asset('assets/branding/dukabook_logo.png', height: 135, fit: BoxFit.contain),
+    )),
+    const SizedBox(height: 10),
+    const Text('DukaBook • Powered by TILLERN LABS', textAlign: TextAlign.center, style: TextStyle(color: ink, fontWeight: FontWeight.w700)),
+    const SizedBox(height: 4),
+    const Text('Building Ideas Into Digital Reality', textAlign: TextAlign.center, style: TextStyle(color: brandGold, fontSize: 12)),
+    const SizedBox(height: 4),
+    const Text('Offline on this phone • shop data stays on this device unless you export it', textAlign: TextAlign.center, style: TextStyle(color: Colors.black54, fontSize: 11)),
     const SizedBox(height: 8),
-    const Text('Back up your phone before uninstalling or clearing app data. Cloud sync and export are not included in this version.', textAlign: TextAlign.center, style: TextStyle(color: Colors.black54, fontSize: 12)),
+    const Text('Beta 2.1 • Offline backup files are unencrypted. Keep copies somewhere private and verify restore on a test device before trusting them with shop records.', textAlign: TextAlign.center, style: TextStyle(color: Colors.black54, fontSize: 12)),
   ]);
 
   Widget _detailPage() {
@@ -867,6 +1100,67 @@ class _DukaScreenState extends State<DukaScreen> {
     ]);
   }
 
+  Widget _welcomeSplash() {
+    const splashBackground = Color(0xFF092C21);
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      key: const ValueKey('welcome-splash'),
+      value: const SystemUiOverlayStyle(
+        statusBarColor: splashBackground,
+        statusBarIconBrightness: Brightness.light,
+        statusBarBrightness: Brightness.dark,
+        systemNavigationBarColor: splashBackground,
+        systemNavigationBarIconBrightness: Brightness.light,
+      ),
+      child: Scaffold(
+        backgroundColor: splashBackground,
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 30),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Spacer(),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(27),
+                  child: Image.asset(
+                    'assets/branding/storefront_icon.png',
+                    width: 118,
+                    height: 118,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+                const SizedBox(height: 22),
+                const Text('DukaBook',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontSize: 35, fontWeight: FontWeight.w900,
+                        letterSpacing: .2, color: Colors.white)),
+                const SizedBox(height: 8),
+                const Text('Run Your Duka Smarter.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 15, color: Color(0xFFD1E9DC))),
+                const SizedBox(height: 18),
+                const Text('Welcome to smarter shop management!',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, color: Color(0xFFB3CFC1))),
+                const Spacer(),
+                const Text('POWERED BY TILLERN LABS',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontWeight: FontWeight.w800, letterSpacing: 1.8,
+                        color: Color(0xFFE7C77A), fontSize: 12)),
+                const SizedBox(height: 6),
+                const Text('Building Ideas Into Digital Reality',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Color(0xFFA5BDB0), fontSize: 11)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final titles = ['Home', 'Stock', 'Sell', 'Debts', 'More'];
@@ -876,13 +1170,24 @@ class _DukaScreenState extends State<DukaScreen> {
     if (_tab == 3) page = _debtPage();
     if (_tab == 4) page = _more();
     if (_subPage != null) page = _detailPage();
-    return Scaffold(
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 300),
+      child: _showWelcome ? _welcomeSplash() : AnnotatedRegion<SystemUiOverlayStyle>(
+      key: const ValueKey('dukabook-home'),
+      value: const SystemUiOverlayStyle(
+        statusBarColor: background,
+        statusBarIconBrightness: Brightness.dark,
+        statusBarBrightness: Brightness.light,
+        systemNavigationBarColor: background,
+        systemNavigationBarIconBrightness: Brightness.dark,
+      ),
+      child: Scaffold(
       appBar: _loading || _error != null || (_tab == 0 && _subPage == null) ? null : AppBar(
         leading: _subPage == null ? null : IconButton(onPressed: () => setState(() => _subPage = null), icon: const Icon(Icons.arrow_back)),
         title: Text(_subPage ?? titles[_tab], style: const TextStyle(fontWeight: FontWeight.w800)),
         actions: [if (_subPage == null) IconButton(tooltip: 'Refresh', onPressed: _refresh, icon: const Icon(Icons.refresh))],
       ),
-      body: _loading ? const Center(child: CircularProgressIndicator()) : _error != null ? Center(child: Padding(padding: const EdgeInsets.all(18), child: Text(_error!))) : page,
+      body: SafeArea(top: _loading || _error != null || (_tab == 0 && _subPage == null), bottom: false, child: _loading ? const Center(child: CircularProgressIndicator()) : _error != null ? Center(child: Padding(padding: const EdgeInsets.all(18), child: Text(_error!))) : page),
       bottomNavigationBar: _loading || _error != null ? null : NavigationBar(
         height: 67,
         selectedIndex: _tab,
@@ -896,6 +1201,6 @@ class _DukaScreenState extends State<DukaScreen> {
           NavigationDestination(icon: Icon(Icons.menu), label: 'More'),
         ],
       ),
-    );
+    )));
   }
 }
