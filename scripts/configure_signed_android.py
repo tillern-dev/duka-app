@@ -37,14 +37,13 @@ if not gradle.is_file():
     raise SystemExit("Missing Android Gradle project. Run flutter create first.")
 
 text = gradle.read_text(encoding="utf-8")
-# Flutter's Groovy template uses either "signingConfig = signingConfigs.debug"
-# or the older "signingConfig signingConfigs.debug" syntax. Accept both.
-import re
-debug_signing_pattern = re.compile(
-    r"(?m)^([ \\t]*signingConfig[ \\t]*)(=[ \\t]*)?signingConfigs\\.debug[ \\t]*$"
+# Flutter's Groovy Gradle scaffold may use either the equals or method form.
+signing_syntaxes = (
+    ("signingConfig = signingConfigs.debug", "signingConfig = signingConfigs.release"),
+    ("signingConfig signingConfigs.debug", "signingConfig signingConfigs.release"),
 )
-if len(debug_signing_pattern.findall(text)) != 1:
-    raise SystemExit("Expected one default debug release signing configuration.")
+if sum(text.count(old) for old, _ in signing_syntaxes) != 1:
+    raise SystemExit("Expected exactly one default debug release signingConfig.")
 if text.count("    buildTypes {") != 1:
     raise SystemExit("Unexpected Android Gradle file layout.")
 
@@ -58,11 +57,10 @@ signing_block = """    signingConfigs {
     }
 """
 text = text.replace("    buildTypes {", signing_block + "    buildTypes {", 1)
-text = debug_signing_pattern.sub(
-    lambda match: match.group(1) + (match.group(2) or "") + "signingConfigs.release",
-    text,
-    count=1,
-)
+for old, new in signing_syntaxes:
+    if old in text:
+        text = text.replace(old, new, 1)
+        break
 
 key_path = Path(os.environ["RUNNER_TEMP"]) / "dukabook-signed-test.jks"
 key_path.write_bytes(keystore_bytes)
