@@ -1,8 +1,8 @@
-name: Build DukaBook v2.1 Branded Beta APK
+name: Build DukaBook v2.2 Retail Pilot Beta APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/v2-2-retail-pilot]
   workflow_dispatch:
 
 permissions:
@@ -38,7 +38,7 @@ jobs:
       - name: Upload beta APK
         uses: actions/upload-artifact@v4
         with:
-          name: DukaBook-v2.1-Branded-Beta-APK
+          name: DukaBook-v2.2-Retail-Pilot-Beta-APK
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14
